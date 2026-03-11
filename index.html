@@ -519,9 +519,124 @@
     .layout { grid-template-columns: 1fr; }
     .sidebar { display: none; }
   }
+
+  /* API KEY MODAL */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(7,10,15,0.92);
+    backdrop-filter: blur(12px);
+    z-index: 999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-overlay.hidden { display: none; }
+  .modal-box {
+    background: var(--surface);
+    border: 1px solid rgba(0,212,255,0.3);
+    border-radius: 16px;
+    padding: 40px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 0 60px rgba(0,212,255,0.1);
+    animation: fadeUp 0.4s ease;
+  }
+  .modal-logo {
+    font-family: var(--display);
+    font-size: 32px;
+    letter-spacing: 3px;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,212,255,0.5);
+    margin-bottom: 6px;
+  }
+  .modal-logo span { color: var(--text); }
+  .modal-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 2px;
+    margin-bottom: 28px;
+  }
+  .modal-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .modal-input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 8px;
+    transition: border-color 0.2s;
+  }
+  .modal-input:focus { border-color: rgba(0,212,255,0.5); }
+  .modal-hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+  .modal-hint a { color: var(--accent); text-decoration: none; }
+  .modal-hint a:hover { text-decoration: underline; }
+  .modal-submit {
+    width: 100%;
+    padding: 13px;
+    background: linear-gradient(135deg, rgba(0,212,255,0.25), rgba(0,212,255,0.1));
+    border: 1px solid rgba(0,212,255,0.5);
+    border-radius: 8px;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .modal-submit:hover {
+    background: linear-gradient(135deg, rgba(0,212,255,0.35), rgba(0,212,255,0.15));
+    box-shadow: 0 0 20px rgba(0,212,255,0.25);
+  }
+  .modal-error {
+    color: var(--danger);
+    font-size: 11px;
+    font-family: var(--mono);
+    margin-bottom: 12px;
+    display: none;
+  }
+  .key-indicator {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--accent3); cursor: pointer;
+  }
+  .key-indicator:hover { color: var(--danger); }
+  .key-indicator:hover .ki-text::before { content: 'CLEAR KEY ×'; }
+  .key-indicator .ki-text::before { content: 'API KEY SET ✓'; }
 </style>
 </head>
 <body>
+
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="apiModal">
+  <div class="modal-box">
+    <div class="modal-logo">APEX <span>/ Financial Intelligence</span></div>
+    <div class="modal-sub">REAL-TIME MARKET AGENT</div>
+    <div class="modal-label">Your Anthropic API Key</div>
+    <input class="modal-input" id="apiKeyInput" type="password" placeholder="sk-ant-api03-..." 
+      onkeydown="if(event.key==='Enter') saveApiKey()" autocomplete="off" spellcheck="false"/>
+    <div class="modal-hint">
+      Your key is stored in memory only — never saved or sent anywhere except directly to Anthropic.<br><br>
+      Don't have a key? Get one free at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> → API Keys → Create Key.
+    </div>
+    <div class="modal-error" id="modalError">Please enter a valid API key (starts with sk-ant-)</div>
+    <button class="modal-submit" onclick="saveApiKey()">LAUNCH AGENT ›</button>
+  </div>
+</div>
 
 <header>
   <div class="header-inner">
@@ -533,6 +648,11 @@
       <span class="time-display" id="clock">--:--:-- UTC</span>
       <span>|</span>
       <span id="scan-status">IDLE</span>
+      <span>|</span>
+      <span class="key-indicator" id="keyIndicator" onclick="clearApiKey()" style="display:none">
+        <div class="status-dot" style="background:var(--accent3);box-shadow:0 0 8px var(--accent3)"></div>
+        <span class="ki-text"></span>
+      </span>
     </div>
   </div>
 </header>
@@ -676,6 +796,29 @@ let countdownSecs = 0;
 let alerts = [];
 let activeFilters = new Set(['rates', 'mortgage', 'equities']);
 let conversationHistory = [];
+let apiKey = '';
+
+// ── API KEY MODAL ──────────────────────────────────────────────
+function saveApiKey() {
+  const val = document.getElementById('apiKeyInput').value.trim();
+  const errEl = document.getElementById('modalError');
+  if (!val.startsWith('sk-ant-') && !val.startsWith('sk-')) {
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  apiKey = val;
+  document.getElementById('apiModal').classList.add('hidden');
+  document.getElementById('keyIndicator').style.display = 'flex';
+}
+
+function clearApiKey() {
+  apiKey = '';
+  document.getElementById('apiKeyInput').value = '';
+  document.getElementById('keyIndicator').style.display = 'none';
+  document.getElementById('apiModal').classList.remove('hidden');
+  if (scanActive) toggleScan();
+}
 
 // ── SYSTEM PROMPT ──────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are APEX, an elite financial intelligence agent with real-time web search. You are concise, analytical, and direct — like a senior trader on a desk.
@@ -905,9 +1048,10 @@ async function callAgent(userText, isScan) {
   if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
 
   try {
+    if (!apiKey) { clearApiKey(); return; }
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
@@ -981,7 +1125,7 @@ async function continueWithToolUse(initialData, isScan) {
 
     const response2 = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
