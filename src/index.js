@@ -1,14 +1,30 @@
 export default {
   async fetch(request) {
+    // ── ORIGIN RESTRICTION ──────────────────────────────────────
+    // Only allow requests from your GitHub Pages domain
+    const ALLOWED_ORIGINS = [
+      'https://ceedeeceedee26.github.io',
+    ];
+    const origin = request.headers.get('Origin') || '';
+    const isAllowed = ALLOWED_ORIGINS.some(o => origin.startsWith(o));
+
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': isAllowed ? origin : 'null',
+      'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version, Authorization, x-provider',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS'
+    };
+
+    // Block requests from disallowed origins
+    if (request.method !== 'OPTIONS' && !isAllowed) {
+      return new Response(JSON.stringify({ error: 'Forbidden' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version, Authorization, x-provider',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS'
-        }
-      });
+      return new Response(null, { headers: corsHeaders });
     }
 
     const provider = request.headers.get('x-provider') || 'claude';
@@ -28,10 +44,7 @@ export default {
       const data = await targetResp.text();
       return new Response(data, {
         status: targetResp.status,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
 
     } else if (provider === 'grok') {
@@ -62,13 +75,10 @@ export default {
       body: outBody
     });
 
-    const data = await resp.text();
-    return new Response(data, {
+    const respData = await resp.text();
+    return new Response(respData, {
       status: resp.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      }
+      headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
   }
 };
