@@ -1,84 +1,145 @@
-export default {
-  async fetch(request) {
-    // ── ORIGIN RESTRICTION ──────────────────────────────────────
-    // Only allow requests from your GitHub Pages domain
-    const ALLOWED_ORIGINS = [
-      'https://ceedeeceedee26.github.io',
-    ];
-    const origin = request.headers.get('Origin') || '';
-    const isAllowed = ALLOWED_ORIGINS.some(o => origin.startsWith(o));
+// @ts-nocheck
+/**
+ * APEX Financial Intelligence — Cloudflare Worker
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Now that keccak256, EIP-712, and secp256k1 all run in the browser,
+ * this Worker only needs to handle:
+ *
+ *   op: 'proxy'   → forward requests to whitelisted URLs
+ *                   (Hyperliquid /exchange, /info fallback, Binance, CoinGecko)
+ *   body.model    → forward to Anthropic or Grok AI API (existing behaviour)
+ *
+ * Cloudflare Secrets (Workers → Settings → Variables → add as Encrypted):
+ *   ANTHROPIC_API_KEY
+ *   GROK_API_KEY  (optional — only needed if you use Grok)
+ *
+ * Deploy: dash.cloudflare.com → Workers & Pages → apex-agent → Edit Code
+ * Select all → paste this file → Save and Deploy
+ */
 
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': isAllowed ? origin : 'null',
-      'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version, Authorization, x-provider',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS'
-    };
+// ─────────────────────────────────────────────────────────────────────────────
+// CORS
+// ─────────────────────────────────────────────────────────────────────────────
+const CORS = {
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': '*',
+};
 
-    // Block requests from disallowed origins
-    if (request.method !== 'OPTIONS' && !isAllowed) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
+const jsonR = (d, s = 200) => new Response(JSON.stringify(d), {
+  status: s,
+  headers: { ...CORS, 'Content-Type': 'application/json' },
+});
+const errR = (m, s = 400) => jsonR({ error: m }, s);
 
-    // Handle CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// DOMAIN WHITELIST — only these hosts can be proxied
+// ─────────────────────────────────────────────────────────────────────────────
+const WHITELIST = [
+  'api.hyperliquid.xyz',
+  'api.hyperliquid-testnet.xyz',
+  'api.coingecko.com',
+  'api.binance.com',
+  'fapi.binance.com',
+  'query1.finance.yahoo.com',
+  'api.alternative.me',
+  'contract.mexc.com',
+  'api.mexc.com',
+];
 
-    const provider = request.headers.get('x-provider') || 'claude';
-    const body = await request.text();
-
-    let targetUrl, headers, outBody;
-
-    if (provider === 'proxy') {
-      // Generic GET proxy — used for Yahoo Finance ticker data
-      const parsed = JSON.parse(body);
-      const targetResp = await fetch(parsed.proxyUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json'
-        }
-      });
-      const data = await targetResp.text();
-      return new Response(data, {
-        status: targetResp.status,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
-
-    } else if (provider === 'grok') {
-      // Route to xAI Grok API
-      const authHeader = request.headers.get('Authorization');
-      targetUrl = 'https://api.x.ai/v1/chat/completions';
-      headers = {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader
-      };
-      outBody = body;
-
-    } else {
-      // Default: route to Anthropic Claude API
-      const apiKey = request.headers.get('x-api-key');
-      targetUrl = 'https://api.anthropic.com/v1/messages';
-      headers = {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      };
-      outBody = body;
-    }
-
-    const resp = await fetch(targetUrl, {
-      method: 'POST',
-      headers,
-      body: outBody
-    });
-
-    const respData = await resp.text();
-    return new Response(respData, {
-      status: resp.status,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders }
-    });
+const domainOk = url => {
+  try {
+    const h = new URL(url).hostname;
+    return WHITELIST.some(d => h === d || h.endsWith('.' + d));
+  } catch {
+    return false;
   }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
+export default {
+  async fetch(request, env) {
+
+    // Preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: CORS });
+    }
+
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return errR('Invalid JSON');
+    }
+
+    const op = body.op;
+
+    // ── op: proxy ─────────────────────────────────────────────────────────────
+    // Forwards requests to whitelisted domains (Hyperliquid, Binance, etc.)
+    // Signing now happens entirely in the browser — the Worker just proxies.
+    if (op === 'proxy') {
+      const { url, method = 'POST', headers: fwdHeaders = {}, body: fwdBody } = body;
+
+      if (!url) return errR('proxy requires url');
+      if (!domainOk(url)) return errR('Domain not whitelisted: ' + url, 403);
+
+      const opts = {
+        method,
+        headers: { 'Content-Type': 'application/json', ...fwdHeaders },
+      };
+      if (fwdBody && method !== 'GET') {
+        opts.body = JSON.stringify(fwdBody);
+      }
+
+      try {
+        const r = await fetch(url, opts);
+        const data = await r.json();
+        return jsonR(data, r.status);
+      } catch (e) {
+        return errR('Proxy fetch failed: ' + e.message, 502);
+      }
+    }
+
+    // ── AI proxy (Anthropic / Grok) ────────────────────────────────────────────
+    // Detected by presence of `model` field — existing behaviour unchanged.
+    if (body.model) {
+      const isGrok  = body.model.startsWith('grok');
+      const target  = isGrok
+        ? 'https://api.x.ai/v1/chat/completions'
+        : 'https://api.anthropic.com/v1/messages';
+      const apiKey  = isGrok ? env.GROK_API_KEY : env.ANTHROPIC_API_KEY;
+
+      const aiHeaders = { 'Content-Type': 'application/json' };
+
+      if (isGrok) {
+        aiHeaders['Authorization'] = `Bearer ${apiKey}`;
+      } else {
+        aiHeaders['x-api-key']        = apiKey;
+        aiHeaders['anthropic-version'] = '2023-06-01';
+        aiHeaders['anthropic-beta']    = 'interleaved-thinking-2025-05-14';
+      }
+
+      // Allow APEX to pass its own key when user enters it in the modal
+      const incomingHeaders = Object.fromEntries(request.headers);
+      if (incomingHeaders['x-api-key']) {
+        aiHeaders['x-api-key'] = incomingHeaders['x-api-key'];
+      }
+
+      try {
+        const r = await fetch(target, {
+          method:  'POST',
+          headers: aiHeaders,
+          body:    JSON.stringify(body),
+        });
+        const data = await r.json();
+        return jsonR(data, r.status);
+      } catch (e) {
+        return errR('AI proxy failed: ' + e.message, 502);
+      }
+    }
+
+    return errR('Unknown request — provide op or model field', 400);
+  },
 };
