@@ -7856,7 +7856,6 @@ function toBinancePair(sym) {
 }
 
 async function fetch4HCandles(sym, limit = 60) {
-  // 60 candles = 10 days of 4H data
   const pair = toBinancePair(sym);
   const url  = `${BINANCE_API}?symbol=${pair}&interval=4h&limit=${limit}`;
   const parse = raw => raw.map(c => ({
@@ -12300,7 +12299,6 @@ async function fetch1HCandles(sym, limit = 50) {
 }
 
 async function fetch15mCandles(sym, limit = 80) {
-  // 80 candles = 20 hours of 15m data — enough for MACD + cross detection
   const pair = toBinancePair(sym);
   const url  = `${BINANCE_API}?symbol=${pair}&interval=15m&limit=${limit}`;
   const parse = raw => raw.map(c => ({
@@ -15862,60 +15860,42 @@ async function hlInfo(payload) {
 // ── HYPERLIQUID EXCHANGE REQUESTS (signed) ────────────────────────────────────
 async function hlExchange(action, vaultAddress = null) {
   const nonce = Date.now();
-  const mainWallet = vaultAddress || portfolio.hlWalletAddress || null;
-
-  // CRITICAL: pass mainWallet into hlSign so connectionId is computed with
-  // vaultFlag=[1,...mainWalletBytes] — matching what HL computes server-side.
-  const sig  = await hlSign(action, nonce, mainWallet);
-
-  // Ensure r/s are checksummed hex strings (no BigInt, no precision issues)
-  const signature = {
-    r: String(sig.r),
-    s: String(sig.s),
-    v: Number(sig.v),
-  };
-
+  // Do NOT send vaultAddress for normal API wallet trading.
+  // vaultAddress is only for Hyperliquid vault contracts.
+  // API wallet ↔ main account link is established on-chain when you authorize.
+  // hlSign still needs null for connectionId (no vault flag).
+  const sig  = await hlSign(action, nonce, null);
   const body = {
     action,
     nonce,
-    signature,
-    ...(mainWallet ? { vaultAddress: mainWallet } : {}),
+    signature: sig,
+    ...(vaultAddress ? { vaultAddress } : {}),
   };
 
-  console.log('[HL Exchange] vaultAddress:', mainWallet);
-  console.log('[HL Exchange] sig r:', signature.r, 's:', signature.s, 'v:', signature.v);
+  console.log('[HL Exchange] URL:', hlBase() + '/exchange');
+  console.log('[HL Exchange] body:', JSON.stringify(body, null, 2));
 
-  const url = hlBase() + '/exchange';
-  const bodyStr = JSON.stringify(body);
-
-  // Route through proxy — the proxy must forward the body without re-parsing.
-  // We send bodyStr as a pre-serialized string so the proxy just passes it through.
   const resp = await fetch(HL_PROXY, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-hl-exchange': '1',  // signal to proxy: forward bodyStr verbatim
-    },
-    body: JSON.stringify({ op: 'proxy', url, method: 'POST', bodyStr }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      op: 'proxy',
+      url: hlBase() + '/exchange',
+      method: 'POST',
+      body,
+    }),
   });
   const result = await resp.json();
-  console.log('[HL Exchange] proxy response:', JSON.stringify(result));
-  if (!resp.ok) throw new Error(`HL exchange proxy error ${resp.status}`);
+  console.log('[HL Exchange] response:', JSON.stringify(result));
+  if (!resp.ok) throw new Error(`HL exchange error ${resp.status}`);
   return result;
 }
 
 // ── ASSET INDEX LOOKUP ────────────────────────────────────────────────────────
-// Map of common agent-suggested symbols → exact HL meta name
-// Per HL docs: use exact coin string from /meta response
+// Normalize agent-suggested symbols to HL's exact coin name from /meta
 const HL_SYM_MAP = {
-  'RNDR':     'RENDER',
-  'MATIC':    'POL',
-  'LUNA':     'LUNA2',
-  // Strip suffixes the agent might add
-  'BTCUSDT':  'BTC',  'ETHUSDT':  'ETH',  'SOLUSDT':  'SOL',
-  'LINKUSDT': 'LINK', 'HYPEUSDT': 'HYPE', 'BNBUSDT':  'BNB',
+  'RNDR': 'RENDER', 'MATIC': 'POL', 'LUNA': 'LUNA2',
 };
-
 function hlNormalizeSym(sym) {
   const upper = sym.toUpperCase()
     .replace(/\/USDT$/, '').replace(/USDT$/, '')
@@ -15931,7 +15911,6 @@ async function hlGetAssetIndex(sym) {
     (meta.universe || []).forEach((asset, i) => {
       _hlAssetIndex[asset.name.toUpperCase()] = i;
     });
-    // Exact match
     if (_hlAssetIndex[normalized] !== undefined) return _hlAssetIndex[normalized];
     // Fuzzy fallback
     const fuzzy = Object.keys(_hlAssetIndex).find(k =>
