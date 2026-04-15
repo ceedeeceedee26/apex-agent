@@ -1,5 +1,5 @@
 // APEX Cloudflare Worker — apex-agent
-// Handles: Anthropic AI proxy + HL exchange proxy + Yahoo Finance proxy
+// Routes: Anthropic (Claude) + xAI (Grok) + HL exchange proxy + Yahoo Finance proxy
 
 export default {
   async fetch(request, env) {
@@ -17,22 +17,17 @@ export default {
       const body = await request.json();
 
       // ── HL Exchange proxy ─────────────────────────────────────────────────
-      // Forwards signed HL exchange requests.
-      // Supports 'bodyStr' (pre-serialized string) to avoid double JSON
-      // serialization corrupting r/s/v signature values.
+      // 'bodyStr' = pre-serialized JSON string — forward verbatim to avoid
+      // double JSON serialization corrupting EIP-712 r/s/v signature values.
       if (body.op === 'proxy') {
         const targetUrl = body.url;
         const method    = body.method || 'POST';
 
         let forwardBody;
-        if (body.bodyStr && typeof body.bodyStr === 'string') {
-          // Pre-serialized — forward verbatim, no re-parsing
-          forwardBody = body.bodyStr;
-        } else if (body.body) {
-          // Object — serialize now (single serialization)
-          forwardBody = JSON.stringify(body.body);
-        } else {
-          forwardBody = undefined;
+        if (typeof body.bodyStr === 'string') {
+          forwardBody = body.bodyStr; // pre-serialized, forward as-is
+        } else if (body.body !== undefined) {
+          forwardBody = JSON.stringify(body.body); // single serialization
         }
 
         const resp = await fetch(targetUrl, {
@@ -63,7 +58,33 @@ export default {
         });
       }
 
-      // ── Anthropic AI proxy ────────────────────────────────────────────────
+      // ── AI provider routing ───────────────────────────────────────────────
+      const provider = request.headers.get('x-provider') || 'claude';
+
+      if (provider === 'grok') {
+        const apiKey = env.GROK_API_KEY;
+        if (!apiKey) {
+          return new Response(JSON.stringify({ error: 'Grok API key not configured' }), {
+            status: 401,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        const resp = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
+        });
+        const text = await resp.text();
+        return new Response(text, {
+          status: resp.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Default: Claude / Anthropic
       const apiKey = env.ANTHROPIC_API_KEY;
       if (!apiKey) {
         return new Response(JSON.stringify({ error: 'invalid x-api-key' }), {
@@ -78,6 +99,7 @@ export default {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'interleaved-thinking-2025-05-14',
         },
         body: JSON.stringify(body),
       });
